@@ -6,7 +6,7 @@
  */
 const PEN_SIZE = 5;
 const ERASER_SIZE = 22;
-const ERASER_ALPHA = 0.18; // 1回ごすりで薄く。重ねるほど消えていく
+const ERASER_ALPHA = 0.65; // 1回で大きく減り、約4回こするとほぼ消える
 const INITIAL_COLOR = "#171717";
 const BACKGROUND_COLOR = "#ffffff";
 const MAX_CANVAS_WIDTH = 1600;
@@ -31,8 +31,10 @@ const state = {
   mode: MODE.PEN,
   drawing: false,
   pointerId: null,
-  lastX: 0,
+  lastX: 0, // 直前の入力点
   lastY: 0,
+  drawX: 0, // 実際に描画した線の終端
+  drawY: 0,
 };
 
 /* ------------------------------------------------------------------ */
@@ -69,9 +71,10 @@ function resizeCanvas() {
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
-  // 背景は白。消しゴムは白で塗る方式
+  // 背景は白。消しゴムは白を薄く重ねる方式
   ctx.save();
   ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
   ctx.fillStyle = BACKGROUND_COLOR;
   ctx.fillRect(0, 0, w, h);
   ctx.restore();
@@ -91,11 +94,23 @@ function dot(x, y) {
   ctx.fill();
 }
 
-function segment(x0, y0, x1, y1) {
+/**
+ * 直線ではなく「前点の制御点＋前後の中点」を通る二次曲線を描く。
+ * 線分は連続して繋がるため、曲線を描いても角が出ない。
+ */
+function curveStep(x, y) {
+  const midX = (state.lastX + x) / 2;
+  const midY = (state.lastY + y) / 2;
+
   ctx.beginPath();
-  ctx.moveTo(x0, y0);
-  ctx.lineTo(x1, y1);
+  ctx.moveTo(state.drawX, state.drawY);
+  ctx.quadraticCurveTo(state.lastX, state.lastY, midX, midY);
   ctx.stroke();
+
+  state.drawX = midX;
+  state.drawY = midY;
+  state.lastX = x;
+  state.lastY = y;
 }
 
 function positionOf(event) {
@@ -129,6 +144,8 @@ function onPointerDown(event) {
   const { x, y } = positionOf(event);
   state.lastX = x;
   state.lastY = y;
+  state.drawX = x;
+  state.drawY = y;
   dot(x, y); // 単一点でも点が描かれる
 }
 
@@ -143,21 +160,26 @@ function onPointerMove(event) {
   if (events.length > 1) {
     for (const e of events) {
       const { x, y } = positionOf(e);
-      segment(state.lastX, state.lastY, x, y);
-      state.lastX = x;
-      state.lastY = y;
+      curveStep(x, y);
     }
     return;
   }
 
   const { x, y } = positionOf(event);
-  segment(state.lastX, state.lastY, x, y);
-  state.lastX = x;
-  state.lastY = y;
+  curveStep(x, y);
 }
 
 function endStroke(event) {
   if (event && event.pointerId !== state.pointerId) return;
+
+  // 中間点で止まった分だけ、最後の入力点まで確かに延長する
+  if (state.drawing) {
+    ctx.beginPath();
+    ctx.moveTo(state.drawX, state.drawY);
+    ctx.lineTo(state.lastX, state.lastY);
+    ctx.stroke();
+  }
+
   state.drawing = false;
   state.pointerId = null;
   ctx.globalAlpha = 1;
