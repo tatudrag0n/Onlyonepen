@@ -6,6 +6,7 @@
  */
 const PEN_SIZE = 5;
 const ERASER_SIZE = 22;
+const ERASER_ALPHA = 0.18; // 1回ごすりで薄く。重ねるほど消えていく
 const INITIAL_COLOR = "#171717";
 const BACKGROUND_COLOR = "#ffffff";
 const MAX_CANVAS_WIDTH = 1600;
@@ -120,6 +121,7 @@ function onPointerDown(event) {
   }
 
   ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = state.mode === MODE.ERASER ? ERASER_ALPHA : 1;
   ctx.strokeStyle = state.mode === MODE.ERASER ? BACKGROUND_COLOR : state.color;
   ctx.fillStyle = ctx.strokeStyle;
   ctx.lineWidth = currentSize();
@@ -158,6 +160,7 @@ function endStroke(event) {
   if (event && event.pointerId !== state.pointerId) return;
   state.drawing = false;
   state.pointerId = null;
+  ctx.globalAlpha = 1;
 }
 
 canvas.addEventListener("pointerdown", onPointerDown);
