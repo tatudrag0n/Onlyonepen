@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#f4f3f1" />
+    <meta name="description" content="Only One Pen — 一本のペン。やり直しはない。" />
+    <title>Only One Pen</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <h1 class="brand__name">Only One Pen</h1>
+          <p class="brand__tagline">One pen. No undo.</p>
+        </div>
+
+        <div class="tools">
+          <label class="swatch" title="ペンの色">
+            <input
+              id="colorPicker"
+              class="swatch__input"
+              type="color"
+              value="#171717"
+              aria-label="ペンの色"
+            />
+            <span id="colorDot" class="swatch__dot"></span>
+            <span id="colorValue" class="swatch__value">#171717</span>
+          </label>
+
+          <button
+            id="eraserButton"
+            class="tool tool--eraser"
+            type="button"
+            aria-pressed="false"
+          >
+            <span class="tool__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M8.6 20H20M4.9 16.4l3.6 3.6 8.7-8.7a2 2 0 0 0 0-2.83l-1.6-1.6a2 2 0 0 0-2.83 0L4.9 13.6a2 2 0 0 0 0 2.83Z"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </span>
+            <span id="eraserLabel" class="tool__label">消しゴム</span>
+          </button>
+
+          <button id="saveButton" class="tool" type="button">
+            <span class="tool__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M12 3v12m0 0 4.5-4.5M12 15l-4.5-4.5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </span>
+            <span class="tool__label">PNG保存</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="stage">
+        <canvas id="canvas" class="canvas"></canvas>
+      </main>
+
+      <p id="status" class="status" role="status"></p>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
