@@ -6,7 +6,10 @@
  */
 const PEN_SIZE = 5;
 const ERASER_SIZE = 22;
-const ERASER_ALPHA = 0.65; // 1回こするごとに線の濃さが (1 - 0.65) 倍になる
+const ERASER_ALPHA = 0.65; // 1往復するごとに残りが (1 - 0.65) 倍。約4往復で消える
+const ERASE_STEP = ERASER_SIZE * 0.4; // 点を置く間隔
+// 1往復で同じ場所が薄くなる度合いを補正し、「1往復 = ERASER_ALPHA」にする
+const ERASE_DAB_ALPHA = 1 - Math.pow(1 - ERASER_ALPHA, ERASE_STEP / ERASER_SIZE);
 const INITIAL_COLOR = "#171717";
 const BACKGROUND_COLOR = "#ffffff";
 const MAX_CANVAS_WIDTH = 1600;
@@ -17,11 +20,12 @@ const MODE = { PEN: "PEN", ERASER: "ERASER" };
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: false });
 
-// 消しゴム用の作業バッファ。1回のなぞり=1回のフェードにするために使う
-const scratch = document.createElement("canvas");
-const scratchCtx = scratch.getContext("2d");
-const before = document.createElement("canvas");
-const beforeCtx = before.getContext("2d");
+// 描画は ink に保存し、消しゴムは eraseMask に「消した割合」を保存する。
+// 表示は 「ink から eraseMask の割合だけ抜き取る」ことで毎回正しく合成される。
+const ink = document.createElement("canvas");
+const inkCtx = ink.getContext("2d");
+const eraseMask = document.createElement("canvas");
+const maskCtx = eraseMask.getContext("2d");
 
 const colorPicker = document.getElementById("colorPicker");
 const colorDot = document.getElementById("colorDot");
@@ -41,7 +45,8 @@ const state = {
   lastY: 0,
   drawX: 0, // 実際に描画した線の終端
   drawY: 0,
-  erasing: false, // 消しゴム 表示中かどうか
+  dabX: 0, // 消しゴムを最後に置いた位置
+  dabY: 0,
   width: 0,
   height: 0,
   dpr: 1,
@@ -68,9 +73,17 @@ function cssSize() {
   return { w, h };
 }
 
+function sizeBuffer(buffer, context, w, h, dpr) {
+  buffer.width = Math.floor(w * dpr);
+  buffer.height = Math.floor(h * dpr);
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.lineCap = "round";
+  context.lineJoin = "round";
+}
+
 function resizeCanvas() {
   const { w, h } = cssSize();
-  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
   state.width = w;
   state.height = h;
@@ -78,20 +91,45 @@ function resizeCanvas() {
 
   canvas.style.width = `${w}px`;
   canvas.style.height = `${h}px`;
-  canvas.width = Math.floor(w * dpr);
-  canvas.height = Math.floor(h * dpr);
+  sizeBuffer(canvas, ctx, w, h, dpr);
+  sizeBuffer(ink, inkCtx, w, h, dpr);
+  sizeBuffer(eraseMask, maskCtx, w, h, dpr);
 
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-
-  // 背景は白。消しゴムは白を薄く重ねる方式
-  ctx.save();
   ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1;
-  ctx.fillStyle = BACKGROUND_COLOR;
-  ctx.fillRect(0, 0, w, h);
-  ctx.restore();
+  ctx.clearRect(0, 0, w, h);
+  inkCtx.clearRect(0, 0, w, h);
+  maskCtx.clearRect(0, 0, w, h);
+}
+
+/* ------------------------------------------------------------------ */
+/* display compositing                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ink から eraseMask の割合だけを引き、表示用キャンバスに描く。
+ * 消された部分は透明になり、CSS の白背景が透ける。
+ */
+function paintDisplay() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(ink, 0, 0);
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.drawImage(eraseMask, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
+}
+
+let flattenQueued = false;
+function queueDisplay() {
+  if (flattenQueued) return;
+  flattenQueued = true;
+  requestAnimationFrame(() => {
+    flattenQueued = false;
+    paintDisplay();
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -102,44 +140,46 @@ function currentSize() {
   return state.mode === MODE.ERASER ? ERASER_SIZE : PEN_SIZE;
 }
 
-/** ペン描画は直接、消しゴムは作業バッファに描く */
-function targetCtx() {
-  return state.mode === MODE.ERASER ? scratchCtx : ctx;
+function applyStrokeStyle(context) {
+  context.globalCompositeOperation = "source-over";
+  context.globalAlpha = 1;
+  context.strokeStyle = state.mode === MODE.ERASER ? BACKGROUND_COLOR : state.color;
+  context.fillStyle = context.strokeStyle;
+  context.lineWidth = currentSize();
+  context.lineCap = "round";
+  context.lineJoin = "round";
 }
 
-function applyStrokeStyle(target) {
-  target.globalCompositeOperation = "source-over";
-  target.globalAlpha = 1; // 濃さは合成時に掛ける
-  target.strokeStyle = state.mode === MODE.ERASER ? BACKGROUND_COLOR : state.color;
-  target.fillStyle = target.strokeStyle;
-  target.lineWidth = currentSize();
-  target.lineCap = "round";
-  target.lineJoin = "round";
-}
-
-function dot(target, x, y) {
-  target.beginPath();
-  target.arc(x, y, currentSize() / 2, 0, Math.PI * 2);
-  target.fill();
+function dot(context, x, y) {
+  context.beginPath();
+  context.arc(x, y, currentSize() / 2, 0, Math.PI * 2);
+  context.fill();
 }
 
 /**
  * 直線ではなく「前点を制御点にした二次曲線」を描く。
  * 線分は連続して繋がるため、曲線を描いても角が出ない。
  */
-function curveStep(target, x, y) {
+function curveStep(x, y) {
   const midX = (state.lastX + x) / 2;
   const midY = (state.lastY + y) / 2;
 
-  target.beginPath();
-  target.moveTo(state.drawX, state.drawY);
-  target.quadraticCurveTo(state.lastX, state.lastY, midX, midY);
-  target.stroke();
+  for (const context of penTargets()) {
+    context.beginPath();
+    context.moveTo(state.drawX, state.drawY);
+    context.quadraticCurveTo(state.lastX, state.lastY, midX, midY);
+    context.stroke();
+  }
 
   state.drawX = midX;
   state.drawY = midY;
   state.lastX = x;
   state.lastY = y;
+}
+
+/** ペンは ink（保存用）と表示用の2枚に描く */
+function penTargets() {
+  return [inkCtx, ctx];
 }
 
 function positionOf(event) {
@@ -151,32 +191,36 @@ function positionOf(event) {
 }
 
 /* ------------------------------------------------------------------ */
-/* eraser compositing                                                  */
+/* eraser                                                              */
 /* ------------------------------------------------------------------ */
 
-/** なぞり始める前の状態を控えておく */
-function beginErase() {
-  scratch.width = before.width = canvas.width;
-  scratch.height = before.height = canvas.height;
-  scratchCtx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
-  scratchCtx.clearRect(0, 0, state.width, state.height);
-  beforeCtx.drawImage(canvas, 0, 0);
-  state.erasing = true;
-}
-
 /**
- * 作業バッファを「1回分だけ」合成する。
- * ゆっくりなぞっても、同じ场所を何度通っても濃さは1回分だけ減る。
+ * 移動距離に応じて点を等間隔に置く。
+ * ゆっくり動いても速く動っても、1往復あたり同じ回数だけ「消した割合」が乗る。
  */
-function renderErase() {
-  if (!state.erasing) return;
-  ctx.save();
-  ctx.globalAlpha = 1;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.drawImage(before, 0, 0);
-  ctx.globalAlpha = ERASER_ALPHA;
-  ctx.drawImage(scratch, 0, 0);
-  ctx.restore();
+function eraseTo(x, y) {
+  const dx = x - state.dabX;
+  const dy = y - state.dabY;
+  const distance = Math.hypot(dx, dy);
+  const steps = Math.max(1, Math.ceil(distance / ERASE_STEP));
+
+  maskCtx.globalCompositeOperation = "source-over";
+  maskCtx.globalAlpha = ERASE_DAB_ALPHA;
+  maskCtx.fillStyle = BACKGROUND_COLOR;
+
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    const px = state.dabX + dx * t;
+    const py = state.dabY + dy * t;
+    maskCtx.beginPath();
+    maskCtx.arc(px, py, ERASER_SIZE / 2, 0, Math.PI * 2);
+    maskCtx.fill();
+  }
+
+  maskCtx.globalAlpha = 1;
+  state.dabX = x;
+  state.dabY = y;
+  queueDisplay();
 }
 
 /* ------------------------------------------------------------------ */
@@ -197,61 +241,73 @@ function onPointerDown(event) {
     /* capture is optional */
   }
 
-  if (state.mode === MODE.ERASER) beginErase();
-
-  const target = targetCtx();
-  applyStrokeStyle(target);
-
   const { x, y } = positionOf(event);
   state.lastX = x;
   state.lastY = y;
   state.drawX = x;
   state.drawY = y;
-  dot(target, x, y); // 単一点でも点が描かれる
+  state.dabX = x;
+  state.dabY = y;
 
-  renderErase();
+  if (state.mode === MODE.ERASER) {
+    eraseTo(x, y);
+    return;
+  }
+
+  applyStrokeStyle(inkCtx);
+  applyStrokeStyle(ctx);
+  dot(inkCtx, x, y); // 単一点でも点が描かれる
+  dot(ctx, x, y);
 }
 
 function onPointerMove(event) {
   if (!state.drawing || event.pointerId !== state.pointerId) return;
   event.preventDefault();
 
-  const target = targetCtx();
+  if (state.mode === MODE.ERASER) {
+    // 高頻度のpointermoveをまとめて処理
+    const events =
+      typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [];
+    const list = events.length > 0 ? events : [event];
 
-  // 高頻度のpointermoveを分割してなめらかに
+    for (const e of list) {
+      const { x, y } = positionOf(e);
+      eraseTo(x, y);
+    }
+    return;
+  }
+
   const events =
     typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [];
 
   if (events.length > 1) {
     for (const e of events) {
       const { x, y } = positionOf(e);
-      curveStep(target, x, y);
+      curveStep(x, y);
     }
   } else {
     const { x, y } = positionOf(event);
-    curveStep(target, x, y);
+    curveStep(x, y);
   }
-
-  renderErase();
 }
 
 function endStroke(event) {
   if (event && event.pointerId !== state.pointerId) return;
 
-  if (state.drawing) {
+  if (state.drawing && state.mode === MODE.PEN) {
     // 中間点で止まった分だけ、最後の入力点まで確かに延長する
-    const target = targetCtx();
-    target.beginPath();
-    target.moveTo(state.drawX, state.drawY);
-    target.lineTo(state.lastX, state.lastY);
-    target.stroke();
+    for (const context of penTargets()) {
+      context.beginPath();
+      context.moveTo(state.drawX, state.drawY);
+      context.lineTo(state.lastX, state.lastY);
+      context.stroke();
+    }
   }
 
-  renderErase();
+  if (state.mode === MODE.ERASER) paintDisplay();
 
   state.drawing = false;
   state.pointerId = null;
-  state.erasing = false;
 }
 
 canvas.addEventListener("pointerdown", onPointerDown);
@@ -312,8 +368,17 @@ function flashStatus(message) {
   );
 }
 
+/** 透明部分を白に置き換えてPNG化する（キャンバスの状態は変更しない） */
 function savePng() {
-  canvas.toBlob((blob) => {
+  const flat = document.createElement("canvas");
+  flat.width = canvas.width;
+  flat.height = canvas.height;
+  const flatCtx = flat.getContext("2d");
+  flatCtx.fillStyle = BACKGROUND_COLOR;
+  flatCtx.fillRect(0, 0, flat.width, flat.height);
+  flatCtx.drawImage(canvas, 0, 0);
+
+  flat.toBlob((blob) => {
     if (!blob) {
       flashStatus("保存できませんでした");
       return;
@@ -346,3 +411,4 @@ window.addEventListener("orientationchange", () => setTimeout(resizeCanvas, 200)
 renderColor();
 setMode(MODE.PEN);
 resizeCanvas();
+paintDisplay();
